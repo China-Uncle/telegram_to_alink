@@ -35,13 +35,38 @@ def alist_upload(local_path, remote_name):
         
     try:
         url = f"{ALIST_URL}/api/fs/put"
-        headers = {"Authorization": token}
+        # 使用 URL 编码的完整目标文件路径
+        file_path = ALIST_PATH + remote_name
+        
+        # 准备请求头部
+        headers = {
+            "Authorization": token,
+            "File-Path": file_path,  # 使用 File-Path 头部
+            "Content-Type": "application/octet-stream"
+        }
+        
+        # 打开文件并获取文件大小
         with open(local_path, "rb") as f:
-            files = {"file": f}
-            data = {"path": ALIST_PATH + remote_name}
-            resp = requests.put(url, headers=headers, data=data, files=files, timeout=300)
+            # 获取文件大小并添加到头部
+            f.seek(0, 2)  # 移动到文件末尾
+            file_size = f.tell()  # 获取文件大小
+            f.seek(0)  # 移动回文件开头
+            
+            headers["Content-Length"] = str(file_size)
+            
+            # 发送请求
+            resp = requests.put(url, headers=headers, data=f, timeout=300)
+        
         resp.raise_for_status()
-        print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
+        result = resp.json()
+        
+        # 检查响应中的任务状态
+        if "data" in result and "task" in result["data"]:
+            task = result["data"]["task"]
+            print(f"☁️ 已提交上传任务: {task['name']}, 状态: {task['status']}")
+        else:
+            print(f"☁️ 已上传到 Alist: {file_path}")
+            
         return True
     except Exception as e:
         print(f"❌ 上传到 Alist 失败: {e}")
