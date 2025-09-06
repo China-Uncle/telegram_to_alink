@@ -60,14 +60,28 @@ def alist_upload(local_path, remote_name):
             resp = requests.put(url, headers=headers, data=f, timeout=300)
         
         resp.raise_for_status()
-        result = resp.json()
         
-        # 检查响应中的任务状态
-        if "data" in result and "task" in result["data"]:
-            task = result["data"]["task"]
-            print(f"☁️ 已提交上传任务: {task['name']}, 状态: {task['status']}")
+        # 解析响应
+        try:
+            result = resp.json()
+        except ValueError:  # JSON解析失败
+            print(f"☁️ 已上传到 Alist (无法解析响应): {ALIST_PATH}{remote_name}")
+            return True
+        
+        # 检查响应中的任务状态，添加None检查
+        if result and isinstance(result, dict):
+            if "data" in result and result["data"] is not None:
+                if "task" in result["data"] and result["data"]["task"] is not None:
+                    task = result["data"]["task"]
+                    task_name = task.get('name', 'Unknown')
+                    task_status = task.get('status', 'Unknown')
+                    print(f"☁️ 已提交上传任务: {task_name}, 状态: {task_status}")
+                else:
+                    print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
+            else:
+                print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
         else:
-            print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
+            print(f"☁️ 已上传到 Alist (响应格式异常): {ALIST_PATH}{remote_name}")
             
         return True
     except Exception as e:
