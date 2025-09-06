@@ -2,6 +2,7 @@ import os
 import re
 import time
 import requests
+from urllib.parse import quote
 from pyrogram import Client, filters
 
 # ========= 配置 =========
@@ -36,7 +37,8 @@ def alist_upload(local_path, remote_name):
     try:
         url = f"{ALIST_URL}/api/fs/put"
         # 使用 URL 编码的完整目标文件路径
-        file_path = ALIST_PATH + remote_name
+        # 对文件路径进行URL编码，确保支持中文等特殊字符
+        file_path = quote(ALIST_PATH + remote_name, safe='/')
         
         # 准备请求头部
         headers = {
@@ -65,7 +67,7 @@ def alist_upload(local_path, remote_name):
             task = result["data"]["task"]
             print(f"☁️ 已提交上传任务: {task['name']}, 状态: {task['status']}")
         else:
-            print(f"☁️ 已上传到 Alist: {file_path}")
+            print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
             
         return True
     except Exception as e:
