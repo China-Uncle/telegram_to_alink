@@ -44,7 +44,8 @@ def alist_upload(local_path, remote_name):
         headers = {
             "Authorization": token,
             "File-Path": file_path,  # 使用 File-Path 头部
-            "Content-Type": "application/octet-stream"
+            "Content-Type": "application/octet-stream",
+            "As-Task": "true",
         }
         
         # 打开文件并获取文件大小
