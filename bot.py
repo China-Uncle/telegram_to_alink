@@ -64,8 +64,11 @@ def alist_upload(local_path, remote_name):
         # 解析响应
         try:
             result = resp.json()
+            # 输出完整的返回值
+            print(f"📤 Alist 上传接口返回值: {result}")
         except ValueError:  # JSON解析失败
             print(f"☁️ 已上传到 Alist (无法解析响应): {ALIST_PATH}{remote_name}")
+            print(f"📤 原始响应内容: {resp.text}")
             return True
         
         # 检查响应中的任务状态，添加None检查
