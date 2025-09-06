@@ -3,3 +3,4 @@ TgCrypto==1.2.3
 requests
 rich
 pyyaml
+ffmpeg-python

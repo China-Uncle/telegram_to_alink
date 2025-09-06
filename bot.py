@@ -2,6 +2,7 @@ import os
 import re
 import time
 import requests
+import ffmpeg  # 添加导入
 from urllib.parse import quote
 from pyrogram import Client, filters
 
@@ -26,6 +27,30 @@ def alist_login():
     except Exception as e:
         print(f"❌ Alist 登录失败: {e}")
         return None
+
+# 转码文件以改变MD5值
+def transcode_video(input_path, output_path):
+    try:
+        # 使用ffmpeg进行转码，只改变MD5值而不显著改变质量
+        # 添加一个轻微的视频滤镜来确保MD5值改变
+        (
+            ffmpeg
+            .input(input_path)
+            .output(output_path, vcodec='libx264', acodec='aac', 
+                   vf='noise=alls=1:allf=t+u', 
+                   preset='ultrafast',
+                   tune='fastdecode')
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+        print(f"✅ 转码完成: {output_path}")
+        return True
+    except ffmpeg.Error as e:
+        print(f"❌ 转码失败: {e}")
+        return False
+    except Exception as e:
+        print(f"❌ 转码过程中发生未知错误: {e}")
+        return False
 
 # 上传文件到 Alist
 def alist_upload(local_path, remote_name):
@@ -137,20 +162,46 @@ async def handle_video(client, message):
         )
         print(f"\n✅ 下载完成: {path}")
 
-        # 上传到 Alist
-        if alist_upload(path, file_name):
+        # 转码文件以改变MD5值
+        transcoded_path = path + ".transcoded.mp4"
+        if transcode_video(path, transcoded_path):
+            # 删除原始文件
             try:
                 os.remove(path)
-                print(f"🗑 已删除本地文件: {path}")
+                print(f"🗑 已删除原始文件: {path}")
             except Exception as e:
-                print(f"⚠️ 删除本地文件失败: {e}")
+                print(f"⚠️ 删除原始文件失败: {e}")
+            
+            # 上传转码后的文件
+            if alist_upload(transcoded_path, file_name):
+                try:
+                    os.remove(transcoded_path)
+                    print(f"🗑 已删除转码文件: {transcoded_path}")
+                except Exception as e:
+                    print(f"⚠️ 删除转码文件失败: {e}")
+            else:
+                # 即使上传失败也尝试删除转码文件以释放空间
+                try:
+                    os.remove(transcoded_path)
+                    print(f"🗑 已删除转码文件 (上传失败): {transcoded_path}")
+                except Exception as e:
+                    print(f"⚠️ 删除转码文件失败: {e}")
         else:
-            # 即使上传失败也尝试删除本地文件以释放空间
-            try:
-                os.remove(path)
-                print(f"🗑 已删除本地文件 (上传失败): {path}")
-            except Exception as e:
-                print(f"⚠️ 删除本地文件失败: {e}")
+            print("❌ 转码失败，将上传原始文件")
+            # 转码失败则上传原始文件
+            if alist_upload(path, file_name):
+                try:
+                    os.remove(path)
+                    print(f"🗑 已删除本地文件: {path}")
+                except Exception as e:
+                    print(f"⚠️ 删除本地文件失败: {e}")
+            else:
+                # 即使上传失败也尝试删除本地文件以释放空间
+                try:
+                    os.remove(path)
+                    print(f"🗑 已删除本地文件 (上传失败): {path}")
+                except Exception as e:
+                    print(f"⚠️ 删除本地文件失败: {e}")
                 
     except Exception as e:
         print(f"❌ 处理消息时发生错误: {e}")
