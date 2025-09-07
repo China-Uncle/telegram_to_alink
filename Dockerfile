@@ -3,9 +3,9 @@ FROM python:3.10-slim
 # 设置工作目录
 WORKDIR /app
 
-# 安装FFmpeg
+# 安装 FFmpeg 和构建依赖
 RUN apt-get update && \
-    apt-get install -y ffmpeg && \
+    apt-get install -y ffmpeg gcc python3-dev build-essential && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 

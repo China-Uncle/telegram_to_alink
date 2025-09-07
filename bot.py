@@ -31,18 +31,58 @@ def alist_login():
 # 转码文件以改变MD5值
 def transcode_video(input_path, output_path):
     try:
-        # 使用ffmpeg进行转码，只改变MD5值而不显著改变质量
-        # 添加一个轻微的视频滤镜来确保MD5值改变
-        (
-            ffmpeg
-            .input(input_path)
-            .output(output_path, vcodec='libx264', acodec='aac', 
-                   vf='noise=alls=1:allf=t+u', 
-                   preset='ultrafast',
-                   tune='fastdecode')
-            .overwrite_output()
-            .run(capture_stdout=True, capture_stderr=True)
-        )
+        # 获取输入文件的信息
+        probe = ffmpeg.probe(input_path)
+        video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
+        
+        if video_stream:
+            # 获取原始视频的比特率、宽度和高度
+            original_bitrate = int(video_stream.get('bit_rate', 2000000))  # 默认2Mbps
+            width = video_stream['width']
+            height = video_stream['height']
+            
+            # 计算目标比特率（稍微降低以控制文件大小）
+            target_bitrate = int(original_bitrate * 0.9)
+            
+            # 使用更高效的转码设置，在保持质量的同时控制文件大小
+            (
+                ffmpeg
+                .input(input_path)
+                .output(output_path, 
+                       vcodec='libx264', 
+                       acodec='aac',
+                       audio_bitrate='128k',  # 固定音频比特率
+                       video_bitrate=f'{target_bitrate}',  # 设置视频比特率
+                       maxrate=f'{int(target_bitrate * 1.2)}',  # 最大比特率
+                       bufsize=f'{int(target_bitrate * 2)}',  # 缓冲区大小
+                       vf='noise=alls=1:allf=t+u',  # 添加轻微噪音确保MD5改变
+                       preset='medium',  # 平衡速度和压缩效率
+                       tune='film',  # 适合视频内容
+                       crf='23',  # 恒定质量参数，数值越大压缩率越高
+                       width=width,  # 保持原宽度
+                       height=height  # 保持原高度
+                      )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+        else:
+            # 如果无法获取视频流信息，使用基础设置
+            (
+                ffmpeg
+                .input(input_path)
+                .output(output_path, 
+                       vcodec='libx264', 
+                       acodec='aac',
+                       audio_bitrate='128k',
+                       video_bitrate='1500k',
+                       vf='noise=alls=1:allf=t+u',
+                       preset='medium',
+                       crf='23'
+                      )
+                .overwrite_output()
+                .run(capture_stdout=True, capture_stderr=True)
+            )
+        
         print(f"✅ 转码完成: {output_path}")
         return True
     except ffmpeg.Error as e:
