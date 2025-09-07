@@ -62,8 +62,7 @@ def transcode_video(input_path, output_path):
                        preset='medium',  # 平衡速度和压缩效率
                        tune='film',  # 适合视频内容
                        crf='23',  # 恒定质量参数，数值越大压缩率越高
-                       width=width,  # 保持原宽度
-                       height=height  # 保持原高度
+                       s=f'{width}x{height}'  # 使用正确的方式设置视频尺寸
                       )
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
