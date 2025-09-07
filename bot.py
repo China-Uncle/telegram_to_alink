@@ -110,7 +110,11 @@ def transcode_video(input_path, output_path):
         print(f"✅ 转码完成: {output_path}")
         return True
     except ffmpeg.Error as e:
+        # 获取并显示详细的ffmpeg错误信息
+        stderr_output = e.stderr.decode('utf-8') if e.stderr else "No stderr output"
         print(f"❌ 转码失败: {e}")
+        print(f"📋 详细错误信息:")
+        print(stderr_output)
         return False
     except Exception as e:
         print(f"❌ 转码过程中发生未知错误: {e}")
@@ -251,21 +255,13 @@ async def handle_video(client, message):
                 except Exception as e:
                     print(f"⚠️ 删除转码文件失败: {e}")
         else:
-            print("❌ 转码失败，将上传原始文件")
-            # 转码失败则上传原始文件
-            if alist_upload(path, file_name):
-                try:
-                    os.remove(path)
-                    print(f"🗑 已删除本地文件: {path}")
-                except Exception as e:
-                    print(f"⚠️ 删除本地文件失败: {e}")
-            else:
-                # 即使上传失败也尝试删除本地文件以释放空间
-                try:
-                    os.remove(path)
-                    print(f"🗑 已删除本地文件 (上传失败): {path}")
-                except Exception as e:
-                    print(f"⚠️ 删除本地文件失败: {e}")
+            print("❌ 转码失败，不上传原始文件")
+            # 转码失败时仅删除本地文件以释放空间，不上传
+            try:
+                os.remove(path)
+                print(f"🗑 已删除本地文件: {path}")
+            except Exception as e:
+                print(f"⚠️ 删除本地文件失败: {e}")
                 
     except Exception as e:
         print(f"❌ 处理消息时发生错误: {e}")
