@@ -31,6 +31,9 @@ def alist_login():
 # 转码文件以改变MD5值
 def transcode_video(input_path, output_path):
     try:
+        # 获取转码前的文件大小
+        original_size = os.path.getsize(input_path)
+        
         # 获取输入文件的信息
         probe = ffmpeg.probe(input_path)
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
@@ -82,6 +85,27 @@ def transcode_video(input_path, output_path):
                 .overwrite_output()
                 .run(capture_stdout=True, capture_stderr=True)
             )
+        
+        # 获取转码后的文件大小
+        transcoded_size = os.path.getsize(output_path)
+        
+        # 计算文件大小变化
+        size_diff = transcoded_size - original_size
+        size_diff_percent = (size_diff / original_size) * 100 if original_size > 0 else 0
+        
+        # 格式化文件大小，转换为MB
+        original_size_mb = original_size / (1024 * 1024)
+        transcoded_size_mb = transcoded_size / (1024 * 1024)
+        size_diff_mb = size_diff / (1024 * 1024)
+        
+        # 打印文件大小对比信息
+        print(f"📊 文件大小对比:")
+        print(f"   转码前: {original_size_mb:.2f} MB")
+        print(f"   转码后: {transcoded_size_mb:.2f} MB")
+        if size_diff >= 0:
+            print(f"   变化: +{size_diff_mb:.2f} MB (+{size_diff_percent:.2f}%)")
+        else:
+            print(f"   变化: {size_diff_mb:.2f} MB ({size_diff_percent:.2f}%)")
         
         print(f"✅ 转码完成: {output_path}")
         return True
