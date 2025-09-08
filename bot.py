@@ -247,7 +247,8 @@ def alist_upload(local_path, remote_name, task_id=""):
 
 # 清理文件名
 def safe_filename(name: str, default="video.mp4"):
-    name = re.sub(r'[\\/:*?"<>|]', "_", name)
+    # 替换所有特殊字符，包括#号，确保跨平台兼容
+    name = re.sub(r'[\\/:*?"<>|#]', "_", name)
     name = name.replace(" ", "_")
     return name if name else default
 
@@ -277,7 +278,7 @@ async def handle_video(client, message):
 
         # 生成唯一任务ID
         task_id = generate_task_id()
-        
+        print(f"\n[{task_id}] 📁 文件: {file_name}")
         # 检查本地是否已存在同名文件
         local_path = os.path.join(os.getcwd(), file_name)
         if os.path.exists(local_path):
