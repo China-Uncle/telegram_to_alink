@@ -130,11 +130,29 @@ def transcode_video(input_path, output_path, task_id=""):
         # 获取视频时长
         total_duration = float(video_stream.get('duration', 0))
         
+        # 获取视频分辨率
+        width = int(video_stream.get('width', 0))
+        height = int(video_stream.get('height', 0))
+        
+        # 判断是否为4K视频
+        is_4k = False
+        if width >= 3840 and height >= 2160:
+            is_4k = True
+            print(f"[{task_id}] 📺 检测到4K视频 ({width}x{height})，将自动降至1080P")
+        
+        # 构建视频滤镜参数
+        if is_4k:
+            # 4K视频降至1080P，保持宽高比
+            vf_param = 'scale=1920:1080:force_original_aspect_ratio=decrease,pad=1920:1080:(ow-iw)/2:(oh-ih)/2,setsar=1,noise=alls=1:allf=t+u'
+        else:
+            # 普通视频保持原分辨率
+            vf_param = 'noise=alls=1:allf=t+u'
+        
         # 使用优化的转码参数，针对1核1G服务器
         cmd = [
             'ffmpeg', '-i', input_path,
             '-c:v', 'libx264', '-c:a', 'aac',
-            '-vf', 'noise=alls=1:allf=t+u',  # 添加轻微噪声改变MD5
+            '-vf', vf_param,                 # 视频滤镜
             '-preset', 'ultrafast',          # 最快预设，适合低配置
             '-tune', 'zerolatency',          # 低延迟优化
             '-threads', '1',                 # 限制为单线程
@@ -167,16 +185,25 @@ def transcode_video(input_path, output_path, task_id=""):
                 current_time = hours * 3600 + minutes * 60 + seconds
                 
                 progress = min((current_time / total_duration) * 100, 100)
-                print(f"\r[{task_id}] 🔄 转码进度: [{progress:5.1f}%] {current_time:.1f}s/{total_duration:.1f}s", end="")
+                if is_4k:
+                    print(f"\r[{task_id}] 🔄 转码进度 (4K→1080P): [{progress:5.1f}%] {current_time:.1f}s/{total_duration:.1f}s", end="")
+                else:
+                    print(f"\r[{task_id}] 🔄 转码进度: [{progress:5.1f}%] {current_time:.1f}s/{total_duration:.1f}s", end="")
         
         process.wait()
         
         if process.returncode == 0:
             transcoded_size = os.path.getsize(output_path)
-            print(f"\n[{task_id}] ✅ 转码完成: {output_path} ({transcoded_size/1024/1024:.1f}MB)")
+            if is_4k:
+                print(f"\n[{task_id}] ✅ 4K转码完成 (降至1080P): {output_path} ({transcoded_size/1024/1024:.1f}MB)")
+            else:
+                print(f"\n[{task_id}] ✅ 转码完成: {output_path} ({transcoded_size/1024/1024:.1f}MB)")
             return True
         else:
-            print(f"\n[{task_id}] ❌ 转码失败，返回码: {process.returncode}")
+            if is_4k:
+                print(f"\n[{task_id}] ❌ 4K转码失败，返回码: {process.returncode}")
+            else:
+                print(f"\n[{task_id}] ❌ 转码失败，返回码: {process.returncode}")
             return False
             
     except Exception as e:
@@ -251,15 +278,22 @@ async def handle_video(client, message):
         # 生成唯一任务ID
         task_id = generate_task_id()
         
-        print(f"\n[{task_id}] 📥 开始下载: {file_name}")
-
-        # 下载文件（允许并发）
-        start_time = time.time()
-        path = await message.download(
-            file_name=file_name,
-            progress=lambda cur, tot, *_: print(f"\r[{task_id}] ⬇️ {file_name} [{cur*100/tot:5.1f}%] {cur/1024/1024:.1f}MB/{tot/1024/1024:.1f}MB", end="" if cur < tot else "\n")
-        )
-        print(f"[{task_id}] ✅ 下载完成: {path}")
+        # 检查本地是否已存在同名文件
+        local_path = os.path.join(os.getcwd(), file_name)
+        if os.path.exists(local_path):
+            print(f"\n[{task_id}] 📁 发现本地文件: {file_name}")
+            file_size = os.path.getsize(local_path)
+            print(f"[{task_id}] 📊 文件大小: {file_size/1024/1024:.1f}MB")
+            path = local_path
+        else:
+            print(f"\n[{task_id}] 📥 开始下载: {file_name}")
+            # 下载文件（允许并发）
+            start_time = time.time()
+            path = await message.download(
+                file_name=file_name,
+                progress=lambda cur, tot, *_: print(f"\r[{task_id}] ⬇️ {file_name} [{cur*100/tot:5.1f}%] {cur/1024/1024:.1f}MB/{tot/1024/1024:.1f}MB", end="" if cur < tot else "\n")
+            )
+            print(f"[{task_id}] ✅ 下载完成: {path}")
 
         # 转码文件（使用队列，确保单线程）
         transcoded_path = path + ".transcoded.mp4"
