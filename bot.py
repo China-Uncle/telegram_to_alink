@@ -247,7 +247,7 @@ def alist_upload(local_path, remote_name, task_id=""):
 
 # 清理文件名
 def safe_filename(name: str, default="video.mp4"):
-    # 替换所有特殊字符，包括#号，确保跨平台兼容
+    """清理文件名，替换特殊字符确保跨平台兼容"""
     name = re.sub(r'[\\/:*?"<>|#]', "_", name)
     name = name.replace(" ", "_")
     return name if name else default
@@ -279,8 +279,15 @@ async def handle_video(client, message):
         # 生成唯一任务ID
         task_id = generate_task_id()
         print(f"\n[{task_id}] 📁 文件: {file_name}")
+        
+        # 确保downloads文件夹存在
+        downloads_dir = os.path.join(os.getcwd(), "downloads")
+        os.makedirs(downloads_dir, exist_ok=True)
+        
+        # 构建完整路径
+        local_path = os.path.join(downloads_dir, file_name)
+        
         # 检查本地是否已存在同名文件
-        local_path = os.path.join(os.getcwd(), file_name)
         if os.path.exists(local_path):
             print(f"\n[{task_id}] 📁 发现本地文件: {file_name}")
             file_size = os.path.getsize(local_path)
@@ -288,12 +295,19 @@ async def handle_video(client, message):
             path = local_path
         else:
             print(f"\n[{task_id}] 📥 开始下载: {file_name}")
-            # 下载文件（允许并发）
+            # 下载文件到downloads文件夹
             start_time = time.time()
             path = await message.download(
                 file_name=file_name,
+                block=True,  # 确保返回完整路径
+                in_memory=False,
                 progress=lambda cur, tot, *_: print(f"\r[{task_id}] ⬇️ {file_name} [{cur*100/tot:5.1f}%] {cur/1024/1024:.1f}MB/{tot/1024/1024:.1f}MB", end="" if cur < tot else "\n")
             )
+            # 确保文件被移动到downloads目录
+            if os.path.dirname(path) != downloads_dir:
+                new_path = local_path
+                os.rename(path, new_path)
+                path = new_path
             print(f"[{task_id}] ✅ 下载完成: {path}")
 
         # 转码文件（使用队列，确保单线程）
