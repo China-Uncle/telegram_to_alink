@@ -2,9 +2,13 @@ import os
 import re
 import time
 import requests
-import ffmpeg  # 添加导入
+import threading
+import queue
+import subprocess
+import ffmpeg
 from urllib.parse import quote
 from pyrogram import Client, filters
+from datetime import datetime
 
 # ========= 配置 =========
 API_ID = int(os.environ.get("API_ID"))
@@ -17,6 +21,11 @@ ALIST_PASS = os.environ.get("ALIST_PASS")
 ALIST_PATH = os.environ.get("ALIST_PATH", "/videos/")
 # ========================
 
+# 全局转码队列和线程
+transcode_queue = queue.Queue()
+transcode_thread = None
+transcode_lock = threading.Lock()
+
 # 登录 Alist 获取 token
 def alist_login():
     try:
@@ -28,8 +37,84 @@ def alist_login():
         print(f"❌ Alist 登录失败: {e}")
         return None
 
-# 转码文件以改变MD5值
-def transcode_video(input_path, output_path):
+# 转码工作线程
+def transcode_worker():
+    """转码工作线程，从队列中获取任务并执行"""
+    while True:
+        try:
+            # 从队列获取转码任务
+            task_data = transcode_queue.get()
+            if task_data is None:  # 停止信号
+                break
+                
+            input_path, output_path, task_id = task_data
+            
+            print(f"[{task_id}] 🔄 开始转码任务...")
+            
+            # 执行转码
+            success = transcode_video(input_path, output_path, task_id)
+            
+            if success:
+                # 转码成功后，继续后续处理
+                print(f"[{task_id}] ✅ 转码完成，准备上传...")
+                
+                # 删除原始文件
+                try:
+                    os.remove(input_path)
+                    print(f"[{task_id}] 🗑 已删除原始文件: {input_path}")
+                except Exception as e:
+                    print(f"[{task_id}] ⚠️ 删除原始文件失败: {e}")
+                
+                # 上传到Alist
+                file_name = os.path.basename(input_path)
+                if alist_upload(output_path, file_name, task_id):
+                    # 上传成功后删除转码文件
+                    try:
+                        os.remove(output_path)
+                        print(f"[{task_id}] 🗑 已删除转码文件: {output_path}")
+                    except Exception as e:
+                        print(f"[{task_id}] ⚠️ 删除转码文件失败: {e}")
+                else:
+                    # 上传失败也删除转码文件
+                    try:
+                        os.remove(output_path)
+                        print(f"[{task_id}] 🗑 已删除转码文件 (上传失败): {output_path}")
+                    except Exception as e:
+                        print(f"[{task_id}] ⚠️ 删除转码文件失败: {e}")
+            else:
+                print(f"[{task_id}] ❌ 转码失败，跳过上传")
+                # 转码失败时删除原始文件
+                try:
+                    os.remove(input_path)
+                    print(f"[{task_id}] 🗑 已删除原始文件 (转码失败): {input_path}")
+                except Exception as e:
+                    print(f"[{task_id}] ⚠️ 删除原始文件失败: {e}")
+            
+            # 标记任务完成
+            transcode_queue.task_done()
+            
+        except Exception as e:
+            print(f"❌ 转码工作线程错误: {e}")
+
+# 启动转码工作线程
+def start_transcode_worker():
+    """启动转码工作线程"""
+    global transcode_thread
+    with transcode_lock:
+        if transcode_thread is None or not transcode_thread.is_alive():
+            transcode_thread = threading.Thread(target=transcode_worker, daemon=True)
+            transcode_thread.start()
+            print("🔄 转码工作线程已启动")
+
+# 转码文件（使用队列）
+def queue_transcode_task(input_path, output_path, task_id):
+    """将转码任务加入队列"""
+    start_transcode_worker()
+    transcode_queue.put((input_path, output_path, task_id))
+    print(f"[{task_id}] 📋 转码任务已加入队列，当前队列长度: {transcode_queue.qsize()}")
+
+# 转码文件（实际执行）
+def transcode_video(input_path, output_path, task_id=""):
     try:
         # 获取转码前的文件大小
         original_size = os.path.getsize(input_path)
@@ -38,150 +123,99 @@ def transcode_video(input_path, output_path):
         probe = ffmpeg.probe(input_path)
         video_stream = next((stream for stream in probe['streams'] if stream['codec_type'] == 'video'), None)
         
-        if video_stream:
-            # 获取原始视频的比特率、宽度和高度
-            original_bitrate = int(video_stream.get('bit_rate', 2000000))  # 默认2Mbps
-            width = video_stream['width']
-            height = video_stream['height']
+        if not video_stream:
+            print(f"[{task_id}] ❌ 无法获取视频流信息")
+            return False
             
-            # 计算目标比特率（稍微降低以控制文件大小）
-            target_bitrate = int(original_bitrate * 0.9)
+        # 获取视频时长
+        total_duration = float(video_stream.get('duration', 0))
+        
+        # 使用优化的转码参数，针对1核1G服务器
+        cmd = [
+            'ffmpeg', '-i', input_path,
+            '-c:v', 'libx264', '-c:a', 'aac',
+            '-vf', 'noise=alls=1:allf=t+u',  # 添加轻微噪声改变MD5
+            '-preset', 'ultrafast',          # 最快预设，适合低配置
+            '-tune', 'zerolatency',          # 低延迟优化
+            '-threads', '1',                 # 限制为单线程
+            '-crf', '28',                    # 平衡质量和文件大小
+            '-y', output_path
+        ]
+        
+        process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            universal_newlines=True
+        )
+        
+        # 正则表达式匹配进度信息
+        time_pattern = re.compile(r'time=(\d{2}):(\d{2}):(\d{2}\.\d{2})')
+        
+        # 实时读取进度
+        while True:
+            line = process.stderr.readline()
+            if not line:
+                break
             
-            # 使用更高效的转码设置，在保持质量的同时控制文件大小
-            (
-                ffmpeg
-                .input(input_path)
-                .output(output_path, 
-                       vcodec='libx264', 
-                       acodec='aac',
-                       audio_bitrate='128k',  # 固定音频比特率
-                       video_bitrate=f'{target_bitrate}',  # 设置视频比特率
-                       maxrate=f'{int(target_bitrate * 1.2)}',  # 最大比特率
-                       bufsize=f'{int(target_bitrate * 2)}',  # 缓冲区大小
-                       vf='noise=alls=1:allf=t+u',  # 添加轻微噪音确保MD5改变
-                       preset='medium',  # 平衡速度和压缩效率
-                       tune='film',  # 适合视频内容
-                       crf='23',  # 恒定质量参数，数值越大压缩率越高
-                       s=f'{width}x{height}'  # 使用正确的方式设置视频尺寸
-                      )
-                .overwrite_output()
-                .run(capture_stdout=True, capture_stderr=True)
-            )
+            # 查找时间进度
+            match = time_pattern.search(line)
+            if match and total_duration > 0:
+                hours = float(match.group(1))
+                minutes = float(match.group(2))
+                seconds = float(match.group(3))
+                current_time = hours * 3600 + minutes * 60 + seconds
+                
+                progress = min((current_time / total_duration) * 100, 100)
+                print(f"\r[{task_id}] 🔄 转码进度: [{progress:5.1f}%] {current_time:.1f}s/{total_duration:.1f}s", end="")
+        
+        process.wait()
+        
+        if process.returncode == 0:
+            transcoded_size = os.path.getsize(output_path)
+            print(f"\n[{task_id}] ✅ 转码完成: {output_path} ({transcoded_size/1024/1024:.1f}MB)")
+            return True
         else:
-            # 如果无法获取视频流信息，使用基础设置
-            (
-                ffmpeg
-                .input(input_path)
-                .output(output_path, 
-                       vcodec='libx264', 
-                       acodec='aac',
-                       audio_bitrate='128k',
-                       video_bitrate='1500k',
-                       vf='noise=alls=1:allf=t+u',
-                       preset='medium',
-                       crf='23'
-                      )
-                .overwrite_output()
-                .run(capture_stdout=True, capture_stderr=True)
-            )
-        
-        # 获取转码后的文件大小
-        transcoded_size = os.path.getsize(output_path)
-        
-        # 计算文件大小变化
-        size_diff = transcoded_size - original_size
-        size_diff_percent = (size_diff / original_size) * 100 if original_size > 0 else 0
-        
-        # 格式化文件大小，转换为MB
-        original_size_mb = original_size / (1024 * 1024)
-        transcoded_size_mb = transcoded_size / (1024 * 1024)
-        size_diff_mb = size_diff / (1024 * 1024)
-        
-        # 打印文件大小对比信息
-        print(f"📊 文件大小对比:")
-        print(f"   转码前: {original_size_mb:.2f} MB")
-        print(f"   转码后: {transcoded_size_mb:.2f} MB")
-        if size_diff >= 0:
-            print(f"   变化: +{size_diff_mb:.2f} MB (+{size_diff_percent:.2f}%)")
-        else:
-            print(f"   变化: {size_diff_mb:.2f} MB ({size_diff_percent:.2f}%)")
-        
-        print(f"✅ 转码完成: {output_path}")
-        return True
-    except ffmpeg.Error as e:
-        # 获取并显示详细的ffmpeg错误信息
-        stderr_output = e.stderr.decode('utf-8') if e.stderr else "No stderr output"
-        print(f"❌ 转码失败: {e}")
-        print(f"📋 详细错误信息:")
-        print(stderr_output)
-        return False
+            print(f"\n[{task_id}] ❌ 转码失败，返回码: {process.returncode}")
+            return False
+            
     except Exception as e:
-        print(f"❌ 转码过程中发生未知错误: {e}")
+        print(f"[{task_id}] ❌ 转码过程中发生错误: {e}")
         return False
 
 # 上传文件到 Alist
-def alist_upload(local_path, remote_name):
+def alist_upload(local_path, remote_name, task_id=""):
     token = alist_login()
     if not token:
-        print(f"❌ 无法获取 Alist token，上传失败: {remote_name}")
+        print(f"[{task_id}] ❌ 无法获取 Alist token，上传失败: {remote_name}")
         return False
         
     try:
         url = f"{ALIST_URL}/api/fs/put"
-        # 使用 URL 编码的完整目标文件路径
-        # 对文件路径进行URL编码，确保支持中文等特殊字符
         file_path = quote(ALIST_PATH + remote_name, safe='/')
         
-        # 准备请求头部
+        # 获取文件大小
+        file_size = os.path.getsize(local_path)
+        
         headers = {
             "Authorization": token,
-            "File-Path": file_path,  # 使用 File-Path 头部
+            "File-Path": file_path,
             "Content-Type": "application/octet-stream",
             "As-Task": "true",
+            "Content-Length": str(file_size),
         }
         
-        # 打开文件并获取文件大小
+        print(f"[{task_id}] ☁️ 开始上传: {remote_name} ({file_size/1024/1024:.1f}MB)")
+        
         with open(local_path, "rb") as f:
-            # 获取文件大小并添加到头部
-            f.seek(0, 2)  # 移动到文件末尾
-            file_size = f.tell()  # 获取文件大小
-            f.seek(0)  # 移动回文件开头
-            
-            headers["Content-Length"] = str(file_size)
-            
-            # 发送请求
             resp = requests.put(url, headers=headers, data=f, timeout=300)
         
         resp.raise_for_status()
-        
-        # 解析响应
-        try:
-            result = resp.json()
-            # 输出完整的返回值
-            print(f"📤 Alist 上传接口返回值: {result}")
-        except ValueError:  # JSON解析失败
-            print(f"☁️ 已上传到 Alist (无法解析响应): {ALIST_PATH}{remote_name}")
-            print(f"📤 原始响应内容: {resp.text}")
-            return True
-        
-        # 检查响应中的任务状态，添加None检查
-        if result and isinstance(result, dict):
-            if "data" in result and result["data"] is not None:
-                if "task" in result["data"] and result["data"]["task"] is not None:
-                    task = result["data"]["task"]
-                    task_name = task.get('name', 'Unknown')
-                    task_status = task.get('status', 'Unknown')
-                    print(f"☁️ 已提交上传任务: {task_name}, 状态: {task_status}")
-                else:
-                    print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
-            else:
-                print(f"☁️ 已上传到 Alist: {ALIST_PATH}{remote_name}")
-        else:
-            print(f"☁️ 已上传到 Alist (响应格式异常): {ALIST_PATH}{remote_name}")
-            
+        print(f"[{task_id}] ✅ 上传完成: {remote_name}")
         return True
+        
     except Exception as e:
-        print(f"❌ 上传到 Alist 失败: {e}")
+        print(f"[{task_id}] ❌ 上传到 Alist 失败: {e}")
         return False
 
 # 清理文件名
@@ -190,15 +224,9 @@ def safe_filename(name: str, default="video.mp4"):
     name = name.replace(" ", "_")
     return name if name else default
 
-# 下载进度显示
-def progress(current, total, start, filename):
-    try:
-        elapsed = time.time() - start
-        speed = current / elapsed if elapsed > 0 else 0
-        percent = current * 100 / total
-        print(f"\r⬇️ {filename} [{percent:.2f}%] {current/1024/1024:.2f}MB / {total/1024/1024:.2f}MB @ {speed/1024:.2f}KB/s", end="")
-    except Exception as e:
-        print(f"\n⚠️ 进度显示错误: {e}")
+# 生成唯一任务ID
+def generate_task_id():
+    return f"{datetime.now().strftime('%H%M%S')}_{threading.current_thread().ident % 1000}"
 
 # Telegram Bot
 app = Client("downloader", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
@@ -220,63 +248,29 @@ async def handle_video(client, message):
         else:
             file_name = media.file_name or "video.mp4"
 
-        print(f"\n📥 收到视频: {file_name}, 开始下载...")
+        # 生成唯一任务ID
+        task_id = generate_task_id()
+        
+        print(f"\n[{task_id}] 📥 开始下载: {file_name}")
 
+        # 下载文件（允许并发）
         start_time = time.time()
         path = await message.download(
             file_name=file_name,
-            progress=lambda cur, tot: progress(cur, tot, start_time, file_name)
+            progress=lambda cur, tot, *_: print(f"\r[{task_id}] ⬇️ {file_name} [{cur*100/tot:5.1f}%] {cur/1024/1024:.1f}MB/{tot/1024/1024:.1f}MB", end="" if cur < tot else "\n")
         )
-        print(f"\n✅ 下载完成: {path}")
+        print(f"[{task_id}] ✅ 下载完成: {path}")
 
-        # 转码文件以改变MD5值
+        # 转码文件（使用队列，确保单线程）
         transcoded_path = path + ".transcoded.mp4"
-        if transcode_video(path, transcoded_path):
-            # 删除原始文件
-            try:
-                os.remove(path)
-                print(f"🗑 已删除原始文件: {path}")
-            except Exception as e:
-                print(f"⚠️ 删除原始文件失败: {e}")
-            
-            # 上传转码后的文件
-            if alist_upload(transcoded_path, file_name):
-                try:
-                    os.remove(transcoded_path)
-                    print(f"🗑 已删除转码文件: {transcoded_path}")
-                except Exception as e:
-                    print(f"⚠️ 删除转码文件失败: {e}")
-            else:
-                # 即使上传失败也尝试删除转码文件以释放空间
-                try:
-                    os.remove(transcoded_path)
-                    print(f"🗑 已删除转码文件 (上传失败): {transcoded_path}")
-                except Exception as e:
-                    print(f"⚠️ 删除转码文件失败: {e}")
-        else:
-            print("❌ 转码失败，不上传原始文件")
-            # 转码失败时仅删除本地文件以释放空间，不上传
-            try:
-                os.remove(path)
-                print(f"🗑 已删除本地文件: {path}")
-            except Exception as e:
-                print(f"⚠️ 删除本地文件失败: {e}")
-                
+        queue_transcode_task(path, transcoded_path, task_id)
+        
     except Exception as e:
         print(f"❌ 处理消息时发生错误: {e}")
 
 if __name__ == "__main__":
     print("🚀 Bot 已启动，等待接收视频...")
-    
-    # 打印配置
-    print("配置:")
-    print(f"API_ID: {API_ID}")
-    print(f"API_HASH: {API_HASH}")
-    print(f"BOT_TOKEN: {BOT_TOKEN}")
-    print(f"ALIST_URL: {ALIST_URL}")
-    print(f"ALIST_USER: {ALIST_USER}")
-    print(f"ALIST_PASS: {ALIST_PASS}")
-    print(f"ALIST_PATH: {ALIST_PATH}")
+    print("📋 转码队列系统已启用，同一时间只处理一个转码任务")
     
     try:
         app.run()
@@ -284,5 +278,4 @@ if __name__ == "__main__":
         print("\n程序被用户中断")
     except Exception as e:
         print(f"\n❌ 程序运行时发生错误: {e}")
-        # 即使发生错误也不退出，继续运行
 
